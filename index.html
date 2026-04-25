@@ -1,0 +1,849 @@
+import { useState, useEffect, useRef, useMemo } from “react”;
+import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer } from “recharts”;
+
+// ─── Supabase Config ──────────────────────────────────────────────────────────
+const SUPABASE_URL = “https://xakbbnzdvxbudtylazkq.supabase.co”;
+const SUPABASE_KEY = “eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhha2JibnpkdnhidWR0eWxhemtxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcxMDU2MzgsImV4cCI6MjA5MjY4MTYzOH0.KO8RgmdTkUQ3ypUM7bKbh9xJ9_a91o-ZK7e0KGN1vYE”;
+
+async function sb(path, method = “GET”, body = null) {
+const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+method,
+headers: {
+“apikey”: SUPABASE_KEY,
+“Authorization”: `Bearer ${SUPABASE_KEY}`,
+“Content-Type”: “application/json”,
+“Prefer”: method === “POST” ? “return=representation” : “return=minimal”,
+},
+body: body ? JSON.stringify(body) : null,
+});
+if (method === “GET” || method === “POST”) {
+const text = await res.text();
+return text ? JSON.parse(text) : [];
+}
+return res.ok;
+}
+
+// ─── Demo Data (fallback) ─────────────────────────────────────────────────────
+const NOW = Date.now(); const DAY = 86400000;
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+// ─── Design Tokens ────────────────────────────────────────────────────────────
+const T = {
+bg: “#080808”, surface: “#111”, surface2: “#161616”,
+border: “#1e1e1e”, borderLight: “#282828”,
+text: “#e8e0d4”, textSub: “#888078”, textMuted: “#4a4642”,
+gold: “#c9a84c”, goldDim: “#c9a84c18”,
+red: “#e05a4a”, redDim: “#e05a4a18”,
+green: “#4aaa7a”, blue: “#4a8aee”, orange: “#e0844a”,
+};
+
+const G = {
+app: { minHeight:“100vh”, background:T.bg, fontFamily:”‘Syne’,sans-serif”, color:T.text, display:“flex”, flexDirection:“column” },
+topbar: { background:T.surface, borderBottom:`1px solid ${T.border}`, padding:“0 24px”, height:58, display:“flex”, alignItems:“center”, justifyContent:“space-between”, flexShrink:0, position:“sticky”, top:0, zIndex:50 },
+main: { display:“flex”, flex:1, overflow:“hidden”, height:“calc(100vh - 58px)” },
+content: { flex:1, overflowY:“auto”, padding:“28px 32px” },
+navItem: (a) => ({ display:“flex”, alignItems:“center”, gap:9, padding:“9px 18px”, cursor:“pointer”, fontSize:13, fontWeight:500, color:a?T.gold:T.textSub, background:a?T.goldDim:“transparent”, borderLeft:`2px solid ${a?T.gold:"transparent"}`, transition:“all .12s” }),
+secLabel: { fontSize:10, fontWeight:700, letterSpacing:2, color:T.textMuted, padding:“14px 18px 6px”, textTransform:“uppercase” },
+card: { background:T.surface, border:`1px solid ${T.border}`, borderRadius:12, padding:“15px 17px”, marginBottom:8, cursor:“pointer”, transition:“border-color .15s” },
+input: { background:”#0c0c0c”, border:`1px solid ${T.border}`, borderRadius:8, padding:“9px 13px”, color:T.text, fontSize:14, outline:“none”, fontFamily:”‘Syne’,sans-serif”, width:“100%”, boxSizing:“border-box” },
+select: { background:”#0c0c0c”, border:`1px solid ${T.border}`, borderRadius:8, padding:“9px 13px”, color:T.text, fontSize:14, outline:“none”, fontFamily:”‘Syne’,sans-serif”, width:“100%”, boxSizing:“border-box”, appearance:“none” },
+btn: (v=“primary”, sm) => ({ padding:sm?“6px 12px”:“9px 18px”, borderRadius:8, border:“none”, cursor:“pointer”, fontSize:sm?12:13, fontWeight:600, fontFamily:”‘Syne’,sans-serif”, background:v===“primary”?T.gold:v===“danger”?T.red:T.borderLight, color:v===“primary”?”#080808”:T.text, whiteSpace:“nowrap” }),
+tag: (c) => ({ display:“inline-block”, background:c+“22”, color:c, border:`1px solid ${c}44`, borderRadius:20, padding:“2px 9px”, fontSize:11, fontWeight:600 }),
+modal: { position:“fixed”, inset:0, background:”#000000e0”, zIndex:200, display:“flex”, alignItems:“center”, justifyContent:“center”, padding:20 },
+modalBox: { background:”#111”, border:`1px solid ${T.borderLight}`, borderRadius:16, padding:26, width:“100%”, maxWidth:540, maxHeight:“90vh”, overflowY:“auto” },
+h1: { fontFamily:”‘Playfair Display’,serif”, fontSize:26, fontWeight:700, margin:“0 0 4px” },
+h2: { fontFamily:”‘Playfair Display’,serif”, fontSize:20, fontWeight:700, margin:0 },
+};
+
+const STATUS_COLORS = { Active:T.green, Lead:T.blue, Inactive:T.textMuted, VIP:T.gold };
+const INTERACTION_TYPES = [“Call”,“WhatsApp”,“Email”,“Meeting”,“Other”];
+const CAT_COLORS = [”#c9a84c”,”#4aaa7a”,”#4a8aee”,”#c94c8a”,”#e05a4a”,”#8a4aee”,”#4ac9c9”,”#e08a4a”];
+const CAT_ICONS = [“⌚”,“📱”,“👗”,“💎”,“🏠”,“🚗”,“🍽️”,“💼”,“🎯”,“🌿”,“🛍️”,“✈️”];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function Avatar({ name, size=40, color=T.gold }) {
+const init = name ? name.split(” “).map(w=>w[0]).join(””).toUpperCase().slice(0,2) : “?”;
+return <div style={{ width:size, height:size, borderRadius:“50%”, background:color+“22”, border:`1.5px solid ${color}44`, display:“flex”, alignItems:“center”, justifyContent:“center”, color, fontSize:size*0.34, fontWeight:700, fontFamily:”‘Playfair Display’,serif”, flexShrink:0 }}>{init}</div>;
+}
+function Badge({ status }) { const c=STATUS_COLORS[status]||T.textMuted; return <span style={G.tag(c)}>{status}</span>; }
+function Lbl({ children }) { return <div style={{ fontSize:11, color:T.textMuted, marginBottom:5, letterSpacing:1, textTransform:“uppercase” }}>{children}</div>; }
+
+function Toast({ toasts }) {
+return <div style={{ position:“fixed”, bottom:22, right:22, zIndex:999, display:“flex”, flexDirection:“column”, gap:7 }}>
+{toasts.map(t=><div key={t.id} style={{ background:t.type===“error”?”#2a1010”:t.type===“warn”?”#2a2010”:”#102a18”, border:`1px solid ${t.type==="error"?T.red:t.type==="warn"?T.orange:T.green}44`, color:T.text, borderRadius:8, padding:“11px 16px”, fontSize:13, minWidth:200 }}>{t.msg}</div>)}
+
+  </div>;
+}
+
+function Confirm({ title, desc, onConfirm, onCancel }) {
+return <div style={G.modal} onClick={e=>e.target===e.currentTarget&&onCancel()}>
+<div style={{ …G.modalBox, maxWidth:360 }}>
+<div style={{ fontSize:28, marginBottom:10 }}>⚠️</div>
+<h3 style={{ …G.h2, marginBottom:8 }}>{title}</h3>
+<p style={{ fontSize:14, color:T.textSub, margin:“0 0 22px” }}>{desc}</p>
+<div style={{ display:“flex”, gap:9, justifyContent:“flex-end” }}>
+<button style={G.btn(“ghost”)} onClick={onCancel}>Batal</button>
+<button style={G.btn(“danger”)} onClick={onConfirm}>Ya, Hapus</button>
+</div>
+</div>
+
+  </div>;
+}
+
+function Spinner() {
+return <div style={{ display:“flex”, alignItems:“center”, justifyContent:“center”, padding:“80px 0”, flexDirection:“column”, gap:16 }}>
+<div style={{ width:36, height:36, border:`3px solid ${T.border}`, borderTop:`3px solid ${T.gold}`, borderRadius:“50%”, animation:“spin 0.8s linear infinite” }} />
+<div style={{ fontSize:13, color:T.textMuted }}>Memuat data…</div>
+<style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+
+  </div>;
+}
+
+function followUpStatus(d) {
+if (!d) return null;
+const fd=new Date(d); const today=new Date(); today.setHours(0,0,0,0); fd.setHours(0,0,0,0);
+return fd<today?“overdue”:fd.getTime()===today.getTime()?“today”:“upcoming”;
+}
+
+function exportCSV(contacts, categories) {
+const getCat = id => categories.find(c=>c.id===id)?.name||””;
+const rows=[[“Nama”,“HP”,“Email”,“Perusahaan”,“Alamat”,“Status”,“Kategori”,“Tags”,“Catatan”,“Follow Up”]];
+contacts.forEach(c=>rows.push([c.name,c.phone,c.email,c.company,c.address,c.status,getCat(c.category_id),(c.tags||[]).join(”;”),c.notes,c.follow_up_date]));
+const csv=rows.map(r=>r.map(v=>`"${(v||"").replace(/"/g,'""')}"`).join(”,”)).join(”\n”);
+const a=document.createElement(“a”); a.href=URL.createObjectURL(new Blob([csv],{type:“text/csv”})); a.download=“kontak_crm.csv”; a.click();
+}
+
+function findDuplicates(contacts) {
+const groups=[]; const seen=new Set();
+contacts.forEach((c,i)=>{
+if(seen.has(c.id)) return;
+const dupes=contacts.filter((x,j)=>j!==i&&((c.phone&&x.phone&&c.phone===x.phone)||(c.email&&x.email&&c.email.toLowerCase()===x.email.toLowerCase())||(c.name.toLowerCase()===x.name.toLowerCase())));
+if(dupes.length>0){seen.add(c.id);dupes.forEach(d=>seen.add(d.id));groups.push([c,…dupes]);}
+});
+return groups;
+}
+
+// ─── Contact Form ─────────────────────────────────────────────────────────────
+function ContactModal({ contact, categories, onSave, onClose }) {
+const blank={name:””,phone:””,email:””,company:””,address:””,notes:””,category_id:categories[0]?.id||””,status:“Active”,tags:[],follow_up_date:””,follow_up_note:””};
+const [form,setForm]=useState(contact?{…contact,tags:contact.tags||[]}:blank);
+const [tagInput,setTagInput]=useState(””);
+const set=(k,v)=>setForm(p=>({…p,[k]:v}));
+return (
+<div style={G.modal} onClick={e=>e.target===e.currentTarget&&onClose()}>
+<div style={G.modalBox}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:20}}>
+<h2 style={G.h2}>{contact?“Edit Kontak”:“Tambah Kontak”}</h2>
+<button onClick={onClose} style={{background:“none”,border:“none”,color:T.textSub,fontSize:22,cursor:“pointer”}}>×</button>
+</div>
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:12}}>
+{[{k:“name”,l:“Nama Lengkap *”,s:2},{k:“phone”,l:“Nomor HP”},{k:“email”,l:“Email”},{k:“company”,l:“Perusahaan”},{k:“address”,l:“Alamat”,s:2}].map(f=>(
+<div key={f.k} style={{gridColumn:f.s?`span ${f.s}`:undefined}}>
+<Lbl>{f.l}</Lbl><input style={G.input} value={form[f.k]||””} onChange={e=>set(f.k,e.target.value)} />
+</div>
+))}
+<div><Lbl>Kategori</Lbl>
+<select style={G.select} value={form.category_id||””} onChange={e=>set(“category_id”,e.target.value)}>
+<option value="">— Tanpa Kategori —</option>
+{categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+</select>
+</div>
+<div><Lbl>Status</Lbl>
+<select style={G.select} value={form.status} onChange={e=>set(“status”,e.target.value)}>
+{[“Active”,“Lead”,“Inactive”,“VIP”].map(s=><option key={s}>{s}</option>)}
+</select>
+</div>
+<div><Lbl>Tanggal Follow Up</Lbl><input type=“date” style={G.input} value={form.follow_up_date||””} onChange={e=>set(“follow_up_date”,e.target.value)} /></div>
+<div><Lbl>Catatan Follow Up</Lbl><input style={G.input} placeholder=“Apa yang perlu dilakukan…” value={form.follow_up_note||””} onChange={e=>set(“follow_up_note”,e.target.value)} /></div>
+<div style={{gridColumn:“span 2”}}>
+<Lbl>Tags</Lbl>
+<div style={{display:“flex”,flexWrap:“wrap”,gap:6,marginBottom:7}}>
+{(form.tags||[]).map(t=><span key={t} style={{…G.tag(T.gold),cursor:“pointer”}} onClick={()=>set(“tags”,form.tags.filter(x=>x!==t))}>{t} ×</span>)}
+</div>
+<input style={G.input} placeholder=“Tambah tag + tekan Enter” value={tagInput} onChange={e=>setTagInput(e.target.value)} onKeyDown={e=>{if(e.key===“Enter”){const t=tagInput.trim();if(t&&!form.tags.includes(t))set(“tags”,[…form.tags,t]);setTagInput(””);}}} />
+</div>
+<div style={{gridColumn:“span 2”}}><Lbl>Catatan</Lbl><textarea style={{…G.input,resize:“vertical”,minHeight:70}} value={form.notes||””} onChange={e=>set(“notes”,e.target.value)} /></div>
+</div>
+<div style={{display:“flex”,gap:9,marginTop:20,justifyContent:“flex-end”}}>
+<button style={G.btn(“ghost”)} onClick={onClose}>Batal</button>
+<button style={G.btn(“primary”)} onClick={()=>{if(!form.name.trim())return;onSave(form);onClose();}}>
+{contact?“Simpan Perubahan”:“Tambah Kontak”}
+</button>
+</div>
+</div>
+</div>
+);
+}
+
+// ─── Category Modal ───────────────────────────────────────────────────────────
+function CatModal({ cat, onSave, onClose }) {
+const [form,setForm]=useState(cat||{name:””,color:CAT_COLORS[0],icon:CAT_ICONS[0]});
+return (
+<div style={G.modal} onClick={e=>e.target===e.currentTarget&&onClose()}>
+<div style={{...G.modalBox,maxWidth:400}}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:20}}>
+<h2 style={G.h2}>{cat?“Edit Kategori”:“Kategori Baru”}</h2>
+<button onClick={onClose} style={{background:“none”,border:“none”,color:T.textSub,fontSize:22,cursor:“pointer”}}>×</button>
+</div>
+<Lbl>Nama Kategori</Lbl>
+<input style={{…G.input,marginBottom:16}} placeholder=“cth: Jam Tangan Mewah” value={form.name} onChange={e=>setForm(p=>({…p,name:e.target.value}))} />
+<Lbl>Icon</Lbl>
+<div style={{display:“flex”,flexWrap:“wrap”,gap:7,marginBottom:16}}>
+{CAT_ICONS.map(ic=><button key={ic} onClick={()=>setForm(p=>({…p,icon:ic}))} style={{width:36,height:36,borderRadius:8,background:form.icon===ic?form.color+“33”:T.border,border:`2px solid ${form.icon===ic?form.color:"transparent"}`,cursor:“pointer”,fontSize:17}}>{ic}</button>)}
+</div>
+<Lbl>Warna</Lbl>
+<div style={{display:“flex”,gap:9,flexWrap:“wrap”,marginBottom:22}}>
+{CAT_COLORS.map(c=><button key={c} onClick={()=>setForm(p=>({…p,color:c}))} style={{width:30,height:30,borderRadius:“50%”,background:c,border:`3px solid ${form.color===c?T.text:"transparent"}`,cursor:“pointer”,outline:“none”}} />)}
+</div>
+<div style={{display:“flex”,gap:9,justifyContent:“flex-end”}}>
+<button style={G.btn(“ghost”)} onClick={onClose}>Batal</button>
+<button style={G.btn(“primary”)} onClick={()=>{if(!form.name.trim())return;onSave(form);onClose();}}>Simpan</button>
+</div>
+</div>
+</div>
+);
+}
+
+// ─── Import Modal ─────────────────────────────────────────────────────────────
+function ImportModal({ categories, onImport, onClose }) {
+const [step,setStep]=useState(1); const [raw,setRaw]=useState(””); const [parsed,setParsed]=useState([]); const [catId,setCatId]=useState(categories[0]?.id||””); const [error,setError]=useState(””); const fileRef=useRef();
+function parseCSV(text) {
+const lines=text.trim().split(”\n”).filter(Boolean); if(lines.length<2) return [];
+const headers=lines[0].split(”,”).map(h=>h.replace(/”/g,””).trim().toLowerCase());
+return lines.slice(1).map(line=>{
+const vals=line.split(”,”).map(v=>v.replace(/”/g,””).trim()); const obj={};
+headers.forEach((h,i)=>{obj[h]=vals[i]||””;});
+return {id:uid(),name:obj.name||obj.nama||””,phone:obj.phone||obj.hp||obj.telepon||””,email:obj.email||””,company:obj.company||obj.perusahaan||””,address:obj.address||obj.alamat||””,notes:obj.notes||obj.catatan||””,tags:[],category_id:catId,status:“Active”,follow_up_date:null,follow_up_note:””};
+}).filter(c=>c.name);
+}
+return (
+<div style={G.modal} onClick={e=>e.target===e.currentTarget&&onClose()}>
+<div style={{...G.modalBox,maxWidth:520}}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:18}}>
+<h2 style={G.h2}>Import CSV</h2>
+<button onClick={onClose} style={{background:“none”,border:“none”,color:T.textSub,fontSize:22,cursor:“pointer”}}>×</button>
+</div>
+{step===1&&<>
+<div style={{background:”#0c0c0c”,border:`1px dashed ${T.borderLight}`,borderRadius:10,padding:26,textAlign:“center”,marginBottom:14,cursor:“pointer”}} onClick={()=>fileRef.current.click()}>
+<div style={{fontSize:30,marginBottom:8}}>📂</div>
+<div style={{fontSize:14,color:T.textSub}}>Upload file <strong style={{color:T.gold}}>.CSV</strong></div>
+<div style={{fontSize:11,color:T.textMuted,marginTop:5}}>Header: name, phone, email, company, address, notes</div>
+<input ref={fileRef} type=“file” accept=”.csv” style={{display:“none”}} onChange={e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{setRaw(ev.target.result);setError(””);};r.readAsText(f);}} />
+</div>
+{raw&&<div style={{background:”#0c0c0c”,borderRadius:8,padding:10,fontSize:11,color:T.textSub,marginBottom:12,maxHeight:90,overflow:“auto”,fontFamily:“monospace”}}>{raw.slice(0,250)}…</div>}
+<Lbl>Masukkan ke Kategori</Lbl>
+<select style={{…G.select,marginBottom:14}} value={catId} onChange={e=>setCatId(e.target.value)}>
+<option value="">— Tanpa Kategori —</option>
+{categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+</select>
+{error&&<div style={{color:T.red,fontSize:13,marginBottom:10}}>{error}</div>}
+<div style={{display:“flex”,gap:9,justifyContent:“flex-end”}}>
+<button style={G.btn(“ghost”)} onClick={onClose}>Batal</button>
+<button style={{…G.btn(“primary”),opacity:!raw?.5:1}} onClick={()=>{const r=parseCSV(raw);if(!r.length){setError(“Tidak ada data valid.”);return;}setParsed(r);setStep(2);}}>Preview →</button>
+</div>
+</>}
+{step===2&&<>
+<div style={{fontSize:14,color:T.textSub,marginBottom:12}}>Ditemukan <strong style={{color:T.gold}}>{parsed.length} kontak</strong></div>
+<div style={{maxHeight:260,overflowY:“auto”,marginBottom:16}}>
+{parsed.map((c,i)=><div key={i} style={{display:“flex”,alignItems:“center”,gap:10,padding:“8px 0”,borderBottom:`1px solid ${T.border}`}}>
+<Avatar name={c.name} size={32} /><div><div style={{fontSize:13,fontWeight:600}}>{c.name}</div><div style={{fontSize:11,color:T.textSub}}>{c.phone||c.email||”—”}</div></div>
+</div>)}
+</div>
+<div style={{display:“flex”,gap:9,justifyContent:“flex-end”}}>
+<button style={G.btn(“ghost”)} onClick={()=>setStep(1)}>← Kembali</button>
+<button style={G.btn(“primary”)} onClick={()=>{onImport(parsed);onClose();}}>Import {parsed.length} Kontak</button>
+</div>
+</>}
+</div>
+</div>
+);
+}
+
+// ─── Interaction Modal ────────────────────────────────────────────────────────
+function InteractionModal({ contactId, interactions, onSave, onDelete, onClose }) {
+const list=interactions.filter(i=>i.contact_id===contactId).sort((a,b)=>b.date.localeCompare(a.date));
+const [form,setForm]=useState({type:“Call”,date:new Date().toISOString().slice(0,10),note:””});
+const ICONS={Call:“📞”,WhatsApp:“💬”,Email:“✉️”,Meeting:“🤝”,Other:“📝”};
+return (
+<div style={G.modal} onClick={e=>e.target===e.currentTarget&&onClose()}>
+<div style={{...G.modalBox,maxWidth:460}}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:18}}>
+<h2 style={G.h2}>Riwayat Interaksi</h2>
+<button onClick={onClose} style={{background:“none”,border:“none”,color:T.textSub,fontSize:22,cursor:“pointer”}}>×</button>
+</div>
+<div style={{background:T.surface2,borderRadius:10,padding:14,marginBottom:16}}>
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:10,marginBottom:10}}>
+<div><Lbl>Tipe</Lbl><select style={G.select} value={form.type} onChange={e=>setForm(p=>({…p,type:e.target.value}))}>{INTERACTION_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
+<div><Lbl>Tanggal</Lbl><input type=“date” style={G.input} value={form.date} onChange={e=>setForm(p=>({…p,date:e.target.value}))} /></div>
+</div>
+<Lbl>Catatan</Lbl>
+<textarea style={{…G.input,resize:“vertical”,minHeight:56,marginBottom:10}} placeholder=“Apa yang dibicarakan…” value={form.note} onChange={e=>setForm(p=>({…p,note:e.target.value}))} />
+<button style={G.btn(“primary”)} onClick={()=>{if(!form.note.trim())return;onSave({id:uid(),contact_id:contactId,…form});setForm({type:“Call”,date:new Date().toISOString().slice(0,10),note:””});}}>+ Tambah</button>
+</div>
+<div style={{maxHeight:260,overflowY:“auto”}}>
+{list.length===0&&<div style={{textAlign:“center”,padding:“28px 0”,color:T.textMuted,fontSize:13}}>Belum ada interaksi.</div>}
+{list.map(i=><div key={i.id} style={{display:“flex”,gap:11,alignItems:“flex-start”,padding:“11px 0”,borderBottom:`1px solid ${T.border}`}}>
+<div style={{fontSize:17,flexShrink:0}}>{ICONS[i.type]||“📝”}</div>
+<div style={{flex:1}}>
+<div style={{display:“flex”,justifyContent:“space-between”,marginBottom:3}}>
+<span style={{fontSize:12,fontWeight:600,color:T.gold}}>{i.type}</span>
+<span style={{fontSize:11,color:T.textMuted}}>{new Date(i.date).toLocaleDateString(“id-ID”,{day:“numeric”,month:“short”,year:“numeric”})}</span>
+</div>
+<div style={{fontSize:13}}>{i.note}</div>
+</div>
+<button onClick={()=>onDelete(i.id)} style={{background:“none”,border:“none”,color:T.textMuted,cursor:“pointer”,fontSize:13}}>✕</button>
+</div>)}
+</div>
+</div>
+</div>
+);
+}
+
+// ─── Contact Detail ───────────────────────────────────────────────────────────
+function ContactDetail({ contact, categories, interactions, onEdit, onDelete, onShowInteractions, onClose }) {
+const cat=categories.find(c=>c.id===contact.category_id);
+const iCount=interactions.filter(i=>i.contact_id===contact.id).length;
+const fuS=followUpStatus(contact.follow_up_date);
+return (
+<div style={{…G.modal,alignItems:“flex-end”,justifyContent:“flex-end”}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+<div style={{background:”#111”,borderLeft:`1px solid ${T.borderLight}`,height:“100vh”,width:“100%”,maxWidth:370,overflowY:“auto”,padding:24,boxSizing:“border-box”}}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“flex-start”,marginBottom:22}}>
+<Avatar name={contact.name} size={50} color={cat?.color||T.gold} />
+<div style={{display:“flex”,gap:7}}>
+<button style={G.btn(“ghost”,true)} onClick={()=>onEdit(contact)}>✎</button>
+<button style={G.btn(“danger”,true)} onClick={()=>onDelete(contact.id)}>🗑</button>
+<button onClick={onClose} style={{background:“none”,border:“none”,color:T.textSub,fontSize:20,cursor:“pointer”}}>×</button>
+</div>
+</div>
+<h2 style={{...G.h2,fontSize:19,marginBottom:3}}>{contact.name}</h2>
+{contact.company&&<div style={{fontSize:13,color:T.textSub,marginBottom:10}}>{contact.company}</div>}
+<div style={{display:“flex”,flexWrap:“wrap”,gap:6,marginBottom:14}}>
+<Badge status={contact.status} />
+{cat&&<span style={G.tag(cat.color)}>{cat.icon} {cat.name}</span>}
+{(contact.tags||[]).map(t=><span key={t} style={G.tag(T.textSub)}>{t}</span>)}
+</div>
+{contact.follow_up_date&&<div style={{background:fuS===“overdue”?T.redDim:fuS===“today”?T.goldDim:T.surface2,border:`1px solid ${fuS==="overdue"?T.red:fuS==="today"?T.gold:T.border}44`,borderRadius:9,padding:“10px 13px”,marginBottom:14}}>
+<div style={{fontSize:11,color:fuS===“overdue”?T.red:fuS===“today”?T.gold:T.textSub,fontWeight:700,marginBottom:3}}>{fuS===“overdue”?“⚠️ TERLAMBAT”:fuS===“today”?“🔔 HARI INI”:“📅 FOLLOW UP”}</div>
+<div style={{fontSize:13}}>{new Date(contact.follow_up_date).toLocaleDateString(“id-ID”,{weekday:“long”,day:“numeric”,month:“long”})}</div>
+{contact.follow_up_note&&<div style={{fontSize:12,color:T.textSub,marginTop:3}}>{contact.follow_up_note}</div>}
+</div>}
+<button style={{…G.btn(“ghost”),width:“100%”,marginBottom:14,textAlign:“center”}} onClick={onShowInteractions}>💬 Riwayat Interaksi ({iCount})</button>
+<div style={{display:“flex”,flexDirection:“column”,gap:8}}>
+{[{l:“📞 HP”,v:contact.phone},{l:“✉️ Email”,v:contact.email},{l:“📍 Alamat”,v:contact.address},{l:“📝 Catatan”,v:contact.notes}].map(f=>f.v?<div key={f.l} style={{background:T.surface2,borderRadius:9,padding:“10px 13px”}}>
+<div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>{f.l}</div>
+<div style={{fontSize:13}}>{f.v}</div>
+</div>:null)}
+</div>
+</div>
+</div>
+);
+}
+
+// ─── Manage Categories ────────────────────────────────────────────────────────
+function ManageCatsPage({ categories, contacts, onAdd, onEdit, onDelete, onRename, onNavigate }) {
+const [renamingId,setRenamingId]=useState(null); const [renameVal,setRenameVal]=useState(””); const [confirm,setConfirm]=useState(null); const ref=useRef();
+function startRename(cat){setRenamingId(cat.id);setRenameVal(cat.name);setTimeout(()=>ref.current?.focus(),40);}
+function commitRename(id){if(renameVal.trim())onRename(id,renameVal.trim());setRenamingId(null);}
+return (
+<div>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“flex-start”,marginBottom:24}}>
+<div><h1 style={G.h1}>Kelola Kategori</h1><p style={{color:T.textSub,fontSize:13,margin:“4px 0 0”}}>{categories.length} kategori</p></div>
+<button style={G.btn(“primary”)} onClick={onAdd}>+ Kategori Baru</button>
+</div>
+{categories.length===0&&<div style={{textAlign:“center”,padding:“60px 0”,color:T.textMuted}}><div style={{fontSize:36,marginBottom:10}}>⊞</div>Belum ada kategori.</div>}
+<div style={{display:“flex”,flexDirection:“column”,gap:9}}>
+{categories.map(cat=>{
+const count=contacts.filter(c=>c.category_id===cat.id).length; const isR=renamingId===cat.id;
+return <div key={cat.id} style={{background:T.surface,border:`1px solid ${isR?cat.color+"88":T.border}`,borderRadius:13,padding:“14px 17px”,display:“flex”,alignItems:“center”,gap:13,transition:“border-color .2s”}}>
+<div style={{width:46,height:46,borderRadius:11,background:cat.color+“22”,border:`1.5px solid ${cat.color}44`,display:“flex”,alignItems:“center”,justifyContent:“center”,fontSize:21,flexShrink:0}}>{cat.icon}</div>
+<div style={{flex:1,minWidth:0}}>
+{isR
+?<input ref={ref} style={{…G.input,fontSize:14,fontWeight:600,padding:“5px 9px”,borderColor:cat.color+“88”}} value={renameVal} onChange={e=>setRenameVal(e.target.value)} onKeyDown={e=>{if(e.key===“Enter”)commitRename(cat.id);if(e.key===“Escape”)setRenamingId(null);}} onBlur={()=>commitRename(cat.id)} />
+:<div style={{fontSize:14,fontWeight:600,cursor:“text”,display:“flex”,alignItems:“center”,gap:7}} onClick={()=>startRename(cat)}>{cat.name} <span style={{fontSize:10,color:T.textMuted}}>✎</span></div>
+}
+<div style={{fontSize:12,color:T.textSub,marginTop:2}}><span style={{color:cat.color,fontWeight:600}}>{count}</span> kontak</div>
+</div>
+<div style={{display:“flex”,gap:7,flexShrink:0}}>
+<button style={G.btn(“ghost”,true)} onClick={()=>onNavigate(cat.id)}>Lihat →</button>
+<button style={G.btn(“ghost”,true)} onClick={()=>onEdit(cat)}>✎ Edit</button>
+<button style={G.btn(“danger”,true)} onClick={()=>setConfirm(cat)}>Hapus</button>
+</div>
+</div>;
+})}
+</div>
+{confirm&&<Confirm title={`Hapus "${confirm.name}"?`} desc={`${contacts.filter(c=>c.category_id===confirm.id).length} kontak akan kehilangan kategorinya.`} onConfirm={()=>{onDelete(confirm.id);setConfirm(null);}} onCancel={()=>setConfirm(null)} />}
+</div>
+);
+}
+
+// ─── Follow Up Page ───────────────────────────────────────────────────────────
+function FollowUpPage({ contacts, categories, onView }) {
+const withFU=contacts.filter(c=>c.follow_up_date).sort((a,b)=>a.follow_up_date.localeCompare(b.follow_up_date));
+const overdue=withFU.filter(c=>followUpStatus(c.follow_up_date)===“overdue”);
+const today=withFU.filter(c=>followUpStatus(c.follow_up_date)===“today”);
+const upcoming=withFU.filter(c=>followUpStatus(c.follow_up_date)===“upcoming”);
+function Section({title,items,color}){
+if(!items.length) return null;
+return <div style={{marginBottom:22}}>
+<div style={{fontSize:12,fontWeight:700,color,letterSpacing:1,marginBottom:10,textTransform:“uppercase”}}>{title} ({items.length})</div>
+{items.map(c=>{const cat=categories.find(x=>x.id===c.category_id);return(
+<div key={c.id} style={{background:T.surface,border:`1px solid ${color}33`,borderRadius:12,padding:“12px 15px”,marginBottom:7,display:“flex”,alignItems:“center”,gap:12,cursor:“pointer”}} onClick={()=>onView(c)}>
+<Avatar name={c.name} size={36} color={cat?.color||T.gold} />
+<div style={{flex:1}}><div style={{fontSize:14,fontWeight:600}}>{c.name}</div><div style={{fontSize:12,color:T.textSub,marginTop:2}}>{c.follow_up_note||”—”}</div></div>
+<div style={{fontSize:12,color,fontWeight:600}}>{new Date(c.follow_up_date).toLocaleDateString(“id-ID”,{day:“numeric”,month:“short”})}</div>
+</div>
+);})}
+</div>;
+}
+return (
+<div>
+<h1 style={G.h1}>Follow Up</h1>
+<p style={{color:T.textSub,fontSize:13,margin:“4px 0 22px”}}>{withFU.length} kontak dengan jadwal follow up</p>
+{!withFU.length&&<div style={{textAlign:“center”,padding:“60px 0”,color:T.textMuted}}><div style={{fontSize:36,marginBottom:10}}>📅</div>Belum ada jadwal follow up.</div>}
+<Section title="⚠️ Terlambat" items={overdue} color={T.red} />
+<Section title="🔔 Hari Ini" items={today} color={T.gold} />
+<Section title="📅 Mendatang" items={upcoming} color={T.blue} />
+</div>
+);
+}
+
+// ─── Analytics Page ───────────────────────────────────────────────────────────
+function AnalyticsPage({ contacts, categories, interactions }) {
+const byCategory=categories.map(c=>({name:c.name.slice(0,12),value:contacts.filter(x=>x.category_id===c.id).length,color:c.color})).filter(c=>c.value>0);
+const byStatus=[“Active”,“Lead”,“Inactive”,“VIP”].map(s=>({name:s,value:contacts.filter(c=>c.status===s).length,color:STATUS_COLORS[s]})).filter(c=>c.value>0);
+const months=[];
+for(let i=5;i>=0;i–){const d=new Date();d.setMonth(d.getMonth()-i);const label=d.toLocaleDateString(“id-ID”,{month:“short”});const count=contacts.filter(c=>{const cd=new Date(c.created_at);return cd.getMonth()===d.getMonth()&&cd.getFullYear()===d.getFullYear();}).length;months.push({name:label,Kontak:count});}
+const ICONS={Call:“📞”,WhatsApp:“💬”,Email:“✉️”,Meeting:“🤝”,Other:“📝”};
+const iByType=INTERACTION_TYPES.map(t=>({name:t,value:interactions.filter(i=>i.type===t).length})).filter(x=>x.value>0);
+return (
+<div>
+<h1 style={{...G.h1,marginBottom:22}}>Analitik</h1>
+<div style={{display:“flex”,gap:11,marginBottom:26,flexWrap:“wrap”}}>
+{[{l:“Total”,v:contacts.length,c:T.gold},{l:“Aktif”,v:contacts.filter(c=>c.status===“Active”).length,c:T.green},{l:“Lead”,v:contacts.filter(c=>c.status===“Lead”).length,c:T.blue},{l:“VIP”,v:contacts.filter(c=>c.status===“VIP”).length,c:T.gold},{l:“Interaksi”,v:interactions.length,c:T.orange},{l:“Follow Up”,v:contacts.filter(c=>c.follow_up_date).length,c:T.green}].map(s=>(
+<div key={s.l} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:“16px 18px”,flex:1,minWidth:90}}>
+<div style={{fontSize:24,fontWeight:700,fontFamily:”‘Playfair Display’,serif”,color:s.c}}>{s.v}</div>
+<div style={{fontSize:10,color:T.textMuted,marginTop:3,letterSpacing:.5,textTransform:“uppercase”}}>{s.l}</div>
+</div>
+))}
+</div>
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:14}}>
+<div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:18}}>
+<div style={{fontSize:13,fontWeight:600,marginBottom:14}}>Pertumbuhan Kontak (6 Bulan)</div>
+<ResponsiveContainer width="100%" height={150}>
+<BarChart data={months} margin={{top:0,right:0,left:-22,bottom:0}}>
+<XAxis dataKey="name" tick={{fill:T.textMuted,fontSize:11}} axisLine={false} tickLine={false} />
+<YAxis tick={{fill:T.textMuted,fontSize:11}} axisLine={false} tickLine={false} allowDecimals={false} />
+<Tooltip contentStyle={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,fontSize:12}} />
+<Bar dataKey="Kontak" fill={T.gold} radius={[4,4,0,0]} />
+</BarChart>
+</ResponsiveContainer>
+</div>
+<div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:18}}>
+<div style={{fontSize:13,fontWeight:600,marginBottom:14}}>Kontak per Kategori</div>
+{byCategory.length===0?<div style={{textAlign:“center”,padding:“40px 0”,color:T.textMuted,fontSize:13}}>Belum ada data</div>:
+<ResponsiveContainer width="100%" height={150}>
+<PieChart>
+<Pie data={byCategory} cx=“50%” cy=“50%” outerRadius={55} dataKey=“value” label={({name,value})=>`${name}(${value})`} labelLine={false} fontSize={9}>
+{byCategory.map((e,i)=><Cell key={i} fill={e.color} />)}
+</Pie>
+<Tooltip contentStyle={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,fontSize:12}} />
+</PieChart>
+</ResponsiveContainer>}
+</div>
+<div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:18}}>
+<div style={{fontSize:13,fontWeight:600,marginBottom:14}}>Status Kontak</div>
+{byStatus.map(s=>(
+<div key={s.name} style={{display:“flex”,alignItems:“center”,gap:10,marginBottom:10}}>
+<div style={{width:9,height:9,borderRadius:“50%”,background:s.color,flexShrink:0}} />
+<div style={{flex:1,fontSize:13}}>{s.name}</div>
+<div style={{width:100,height:5,background:T.border,borderRadius:3,overflow:“hidden”}}><div style={{height:“100%”,background:s.color,width:`${Math.round(s.value/(contacts.length||1)*100)}%`,borderRadius:3}} /></div>
+<div style={{fontSize:12,color:T.textSub,width:20,textAlign:“right”}}>{s.value}</div>
+</div>
+))}
+</div>
+<div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:18}}>
+<div style={{fontSize:13,fontWeight:600,marginBottom:14}}>Tipe Interaksi</div>
+{iByType.length===0?<div style={{textAlign:“center”,padding:“30px 0”,color:T.textMuted,fontSize:13}}>Belum ada interaksi</div>:
+iByType.map(s=><div key={s.name} style={{display:“flex”,alignItems:“center”,gap:10,marginBottom:10}}>
+<div style={{fontSize:14}}>{ICONS[s.name]||“📝”}</div>
+<div style={{flex:1,fontSize:13}}>{s.name}</div>
+<div style={{fontSize:12,color:T.textSub,fontWeight:600}}>{s.value}×</div>
+</div>)}
+</div>
+</div>
+</div>
+);
+}
+
+// ─── Duplicates Page ──────────────────────────────────────────────────────────
+function DuplicatesPage({ contacts, categories, onDelete, onView }) {
+const groups=useMemo(()=>findDuplicates(contacts),[contacts]);
+if(!groups.length) return <div><h1 style={{...G.h1,marginBottom:8}}>Deteksi Duplikat</h1><div style={{textAlign:“center”,padding:“80px 0”,color:T.textMuted}}><div style={{fontSize:40,marginBottom:12}}>✅</div><div>Tidak ada duplikat!</div></div></div>;
+return (
+<div>
+<h1 style={G.h1}>Deteksi Duplikat</h1>
+<p style={{color:T.textSub,fontSize:13,margin:“4px 0 22px”}}>{groups.length} grup duplikat ditemukan</p>
+{groups.map((group,gi)=>(
+<div key={gi} style={{background:T.surface,border:`1px solid ${T.red}44`,borderRadius:13,padding:16,marginBottom:12}}>
+<div style={{fontSize:11,color:T.red,fontWeight:700,marginBottom:12,letterSpacing:1}}>⚠️ KEMUNGKINAN DUPLIKAT</div>
+{group.map(c=>{const cat=categories.find(x=>x.id===c.category_id);return(
+<div key={c.id} style={{display:“flex”,alignItems:“center”,gap:11,padding:“9px 0”,borderBottom:`1px solid ${T.border}`}}>
+<Avatar name={c.name} size={36} color={cat?.color||T.gold} />
+<div style={{flex:1}}><div style={{fontSize:14,fontWeight:600}}>{c.name}</div><div style={{fontSize:12,color:T.textSub}}>{c.phone||”—”} · {c.email||”—”}</div></div>
+<div style={{display:“flex”,gap:7}}>
+<button style={G.btn(“ghost”,true)} onClick={()=>onView(c)}>Lihat</button>
+<button style={G.btn(“danger”,true)} onClick={()=>onDelete(c.id)}>Hapus</button>
+</div>
+</div>
+);})}
+</div>
+))}
+</div>
+);
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function CRMApp() {
+const [contacts,setContacts]=useState([]);
+const [categories,setCategories]=useState([]);
+const [interactions,setInteractions]=useState([]);
+const [loading,setLoading]=useState(true);
+const [sidebarOpen,setSidebarOpen]=useState(true);
+const [page,setPage]=useState(“dashboard”);
+const [catFilter,setCatFilter]=useState(null);
+const [search,setSearch]=useState(””);
+const [statusFilter,setStatusFilter]=useState(“All”);
+const [sortBy,setSortBy]=useState(“newest”);
+const [selectedIds,setSelectedIds]=useState([]);
+const [bulkCatId,setBulkCatId]=useState(””);
+const [modal,setModal]=useState(null);
+const [editTarget,setEditTarget]=useState(null);
+const [detailContact,setDetailContact]=useState(null);
+const [interactionContact,setInteractionContact]=useState(null);
+const [toasts,setToasts]=useState([]);
+const [confirmBulkDelete,setConfirmBulkDelete]=useState(false);
+
+function toast(msg,type=“success”){const id=uid();setToasts(p=>[…p,{id,msg,type}]);setTimeout(()=>setToasts(p=>p.filter(t=>t.id!==id)),3000);}
+
+// ── Load from Supabase ──
+useEffect(()=>{
+async function loadAll() {
+try {
+const [cats,cons,ints] = await Promise.all([
+sb(“categories?select=*&order=created_at”),
+sb(“contacts?select=*&order=created_at.desc”),
+sb(“interactions?select=*&order=date.desc”),
+]);
+setCategories(cats||[]);
+setContacts(cons||[]);
+setInteractions(ints||[]);
+} catch(e) {
+toast(“Gagal memuat data. Cek koneksi internet.”,“error”);
+}
+setLoading(false);
+}
+loadAll();
+},[]);
+
+// ── CRUD Contacts ──
+async function saveContact(form) {
+const isEdit = contacts.find(x=>x.id===form.id);
+const payload = {…form, follow_up_date: form.follow_up_date||null};
+if (isEdit) {
+await sb(`contacts?id=eq.${form.id}`,“PATCH”,payload);
+setContacts(p=>p.map(c=>c.id===form.id?{…c,…payload}:c));
+toast(“Kontak diperbarui ✓”);
+} else {
+const newId = uid();
+const row = {…payload, id:newId};
+await sb(“contacts”,“POST”,row);
+setContacts(p=>[row,…p]);
+toast(“Kontak ditambahkan ✓”);
+}
+}
+
+async function deleteContact(id) {
+await sb(`contacts?id=eq.${id}`,“DELETE”);
+setContacts(p=>p.filter(c=>c.id!==id));
+setDetailContact(null);
+setSelectedIds(p=>p.filter(x=>x!==id));
+toast(“Kontak dihapus”,“error”);
+}
+
+// ── CRUD Categories ──
+async function saveCat(form) {
+const isEdit = categories.find(x=>x.id===form.id);
+if (isEdit) {
+await sb(`categories?id=eq.${form.id}`,“PATCH”,form);
+setCategories(p=>p.map(c=>c.id===form.id?{…c,…form}:c));
+} else {
+const row = {…form, id:uid()};
+await sb(“categories”,“POST”,row);
+setCategories(p=>[…p,row]);
+}
+toast(“Kategori disimpan ✓”);
+}
+
+async function deleteCat(id) {
+await sb(`categories?id=eq.${id}`,“DELETE”);
+setCategories(p=>p.filter(c=>c.id!==id));
+setContacts(p=>p.map(c=>c.category_id===id?{…c,category_id:””}:c));
+toast(“Kategori dihapus”,“error”);
+if(catFilter===id){setCatFilter(null);setPage(“contacts”);}
+}
+
+async function renameCat(id,name) {
+await sb(`categories?id=eq.${id}`,“PATCH”,{name});
+setCategories(p=>p.map(c=>c.id===id?{…c,name}:c));
+toast(“Nama diperbarui ✓”);
+}
+
+// ── CRUD Interactions ──
+async function saveInteraction(i) {
+await sb(“interactions”,“POST”,i);
+setInteractions(p=>[i,…p]);
+}
+
+async function deleteInteraction(id) {
+await sb(`interactions?id=eq.${id}`,“DELETE”);
+setInteractions(p=>p.filter(i=>i.id!==id));
+}
+
+// ── Import ──
+async function importContacts(list) {
+await sb(“contacts”,“POST”,list);
+setContacts(p=>[…list,…p]);
+toast(`${list.length} kontak diimport ✓`);
+}
+
+// ── Bulk ──
+async function bulkMoveCat() {
+await Promise.all(selectedIds.map(id=>sb(`contacts?id=eq.${id}`,“PATCH”,{category_id:bulkCatId||null})));
+setContacts(p=>p.map(c=>selectedIds.includes(c.id)?{…c,category_id:bulkCatId}:c));
+toast(`${selectedIds.length} kontak dipindah ✓`);
+setSelectedIds([]); setBulkCatId(””);
+}
+
+async function bulkDelete() {
+await Promise.all(selectedIds.map(id=>sb(`contacts?id=eq.${id}`,“DELETE”)));
+setContacts(p=>p.filter(c=>!selectedIds.includes(c.id)));
+toast(`${selectedIds.length} kontak dihapus`,“error”);
+setSelectedIds([]); setConfirmBulkDelete(false);
+}
+
+const visibleContacts=useMemo(()=>{
+let list=contacts.filter(c=>{
+const ms=!search||c.name?.toLowerCase().includes(search.toLowerCase())||(c.phone||””).includes(search)||(c.email||””).toLowerCase().includes(search.toLowerCase())||(c.company||””).toLowerCase().includes(search.toLowerCase());
+const mc=!catFilter||(catFilter===”**none**”?!c.category_id:c.category_id===catFilter);
+const mst=statusFilter===“All”||c.status===statusFilter;
+return ms&&mc&&mst;
+});
+if(sortBy===“newest”) list.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+else if(sortBy===“oldest”) list.sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+else if(sortBy===“name_asc”) list.sort((a,b)=>a.name.localeCompare(b.name));
+else if(sortBy===“name_desc”) list.sort((a,b)=>b.name.localeCompare(a.name));
+return list;
+},[contacts,search,catFilter,statusFilter,sortBy]);
+
+const overdueCount=contacts.filter(c=>followUpStatus(c.follow_up_date)===“overdue”).length;
+const dupCount=findDuplicates(contacts).length;
+const uncatCount=contacts.filter(c=>!c.category_id).length;
+const currentCat=categories.find(c=>c.id===catFilter);
+const showContacts=page===“contacts”||page===“category”;
+
+return (
+<div style={G.app}>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Syne:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+```
+  {/* Topbar */}
+  <div style={G.topbar}>
+    <div style={{display:"flex",alignItems:"center",gap:14}}>
+      <span style={{fontFamily:"'Playfair Display',serif",fontSize:19,fontWeight:700,color:T.gold,letterSpacing:1}}>◈ KONNECT</span>
+      <span style={{fontSize:11,color:T.textMuted,borderLeft:`1px solid ${T.border}`,paddingLeft:14}}>CRM Manager</span>
+    </div>
+    <div style={{display:"flex",gap:8}}>
+      <button style={G.btn("ghost")} onClick={()=>exportCSV(contacts,categories)}>↓ Export CSV</button>
+      <button style={G.btn("ghost")} onClick={()=>setModal("import")}>↑ Import CSV</button>
+      <button style={G.btn("primary")} onClick={()=>{setEditTarget(null);setModal("add-contact");}}>+ Kontak Baru</button>
+    </div>
+  </div>
+
+  <div style={G.main}>
+    {/* Sidebar */}
+    <div style={{width:sidebarOpen?215:52,background:T.surface,borderRight:`1px solid ${T.border}`,padding:"16px 0",flexShrink:0,overflowY:"auto",overflowX:"hidden",transition:"width .2s ease",display:"flex",flexDirection:"column"}}>
+      <div style={{display:"flex",justifyContent:sidebarOpen?"flex-end":"center",paddingRight:sidebarOpen?10:0,marginBottom:8}}>
+        <button onClick={()=>setSidebarOpen(o=>!o)} style={{background:"none",border:`1px solid ${T.border}`,borderRadius:7,color:T.textSub,cursor:"pointer",padding:"5px 8px",fontSize:13,lineHeight:1}}>
+          {sidebarOpen?"◀":"▶"}
+        </button>
+      </div>
+      {!sidebarOpen
+        ?<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+          {[{id:"dashboard",icon:"▦",badge:0},{id:"contacts",icon:"◉",badge:0},{id:"followup",icon:"📅",badge:overdueCount},{id:"analytics",icon:"📊",badge:0},{id:"duplicates",icon:"⚠️",badge:dupCount},{id:"manage-cats",icon:"⊞",badge:0}].map(p=>(
+            <div key={p.id} onClick={()=>{setPage(p.id);setCatFilter(null);setSearch("");setSelectedIds([]);}} style={{width:36,height:36,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,cursor:"pointer",background:page===p.id&&!catFilter?T.goldDim:"transparent",position:"relative"}}>
+              {p.icon}
+              {p.badge>0&&<span style={{position:"absolute",top:2,right:2,background:T.red,color:"#fff",borderRadius:"50%",fontSize:8,width:14,height:14,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>{p.badge}</span>}
+            </div>
+          ))}
+          <div style={{width:30,height:1,background:T.border,margin:"8px 0"}} />
+          {categories.map(cat=>(
+            <div key={cat.id} onClick={()=>{setCatFilter(cat.id);setPage("contacts");setSearch("");}} style={{width:36,height:36,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,cursor:"pointer",background:catFilter===cat.id?cat.color+"22":"transparent"}}>{cat.icon}</div>
+          ))}
+          <div onClick={()=>{setEditTarget(null);setModal("add-cat");}} style={{width:36,height:36,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,cursor:"pointer",color:T.gold}}>+</div>
+        </div>
+        :<>
+          <div style={G.secLabel}>Menu</div>
+          {[{id:"dashboard",l:"Dashboard",icon:"▦"},{id:"contacts",l:"Semua Kontak",icon:"◉"},{id:"followup",l:"Follow Up",icon:"📅",badge:overdueCount},{id:"analytics",l:"Analitik",icon:"📊"},{id:"duplicates",l:"Duplikat",icon:"⚠️",badge:dupCount},{id:"manage-cats",l:"Kelola Kategori",icon:"⊞"}].map(p=>(
+            <div key={p.id} style={G.navItem(page===p.id&&!catFilter)} onClick={()=>{setPage(p.id);setCatFilter(null);setSearch("");setSelectedIds([]);}}>
+              <span style={{fontSize:13}}>{p.icon}</span><span style={{flex:1}}>{p.l}</span>
+              {p.badge>0&&<span style={{background:T.red,color:"#fff",borderRadius:10,fontSize:10,padding:"1px 6px",fontWeight:700}}>{p.badge}</span>}
+            </div>
+          ))}
+          <div style={{...G.secLabel,display:"flex",justifyContent:"space-between",alignItems:"center",paddingRight:16}}>
+            <span>Kategori</span><span style={{cursor:"pointer",color:T.gold,fontSize:15}} onClick={()=>{setEditTarget(null);setModal("add-cat");}}>+</span>
+          </div>
+          {uncatCount>0&&<div style={G.navItem(catFilter==="__none__"&&page==="contacts")} onClick={()=>{setCatFilter("__none__");setPage("contacts");setSearch("");}}>
+            <span>❔</span><span style={{flex:1,fontSize:13}}>Tanpa Kategori</span><span style={{fontSize:11,color:T.textMuted,background:T.border,borderRadius:10,padding:"1px 6px"}}>{uncatCount}</span>
+          </div>}
+          {categories.map(cat=>{const count=contacts.filter(c=>c.category_id===cat.id).length;return(
+            <div key={cat.id} style={G.navItem(catFilter===cat.id&&page==="contacts")} onClick={()=>{setCatFilter(cat.id);setPage("contacts");setSearch("");}}>
+              <span>{cat.icon}</span><span style={{flex:1,fontSize:13}}>{cat.name}</span><span style={{fontSize:11,color:T.textMuted,background:T.border,borderRadius:10,padding:"1px 6px"}}>{count}</span>
+            </div>
+          );})}
+        </>
+      }
+    </div>
+
+    {/* Content */}
+    <div style={G.content}>
+      {loading ? <Spinner /> : <>
+
+      {/* DASHBOARD */}
+      {page==="dashboard"&&!catFilter&&(
+        <div>
+          <h1 style={G.h1}>Dashboard</h1>
+          <p style={{color:T.textSub,fontSize:13,margin:"4px 0 24px"}}>{new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</p>
+          <div style={{display:"flex",gap:11,marginBottom:24,flexWrap:"wrap"}}>
+            {[{l:"Total",v:contacts.length,c:T.gold},{l:"Aktif",v:contacts.filter(c=>c.status==="Active").length,c:T.green},{l:"Lead",v:contacts.filter(c=>c.status==="Lead").length,c:T.blue},{l:"VIP",v:contacts.filter(c=>c.status==="VIP").length,c:T.gold},{l:"Follow Up",v:contacts.filter(c=>c.follow_up_date).length,c:T.orange,warn:overdueCount>0?`${overdueCount} terlambat`:null}].map(s=>(
+              <div key={s.l} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:12,padding:"16px 18px",flex:1,minWidth:90}}>
+                <div style={{fontSize:24,fontWeight:700,fontFamily:"'Playfair Display',serif",color:s.c}}>{s.v}</div>
+                <div style={{fontSize:10,color:T.textMuted,marginTop:3,letterSpacing:.5,textTransform:"uppercase"}}>{s.l}</div>
+                {s.warn&&<div style={{fontSize:10,color:T.red,marginTop:3}}>{s.warn}</div>}
+              </div>
+            ))}
+          </div>
+          {overdueCount>0&&<div style={{background:T.redDim,border:`1px solid ${T.red}44`,borderRadius:11,padding:"12px 15px",marginBottom:18,cursor:"pointer",display:"flex",alignItems:"center",gap:11}} onClick={()=>setPage("followup")}>
+            <span style={{fontSize:18}}>⚠️</span><div><div style={{fontSize:14,fontWeight:600,color:T.red}}>{overdueCount} Follow Up Terlambat</div><div style={{fontSize:12,color:T.textSub,marginTop:2}}>Klik untuk lihat →</div></div>
+          </div>}
+          <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:17,margin:"0 0 13px"}}>Kategori</h3>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))",gap:9,marginBottom:24}}>
+            {categories.map(cat=>{const count=contacts.filter(c=>c.category_id===cat.id).length;return(
+              <div key={cat.id} style={{...G.card,borderColor:cat.color+"44"}} onClick={()=>{setCatFilter(cat.id);setPage("contacts");}}>
+                <div style={{fontSize:22,marginBottom:7}}>{cat.icon}</div>
+                <div style={{fontWeight:600,fontSize:14}}>{cat.name}</div>
+                <div style={{fontSize:12,color:cat.color,marginTop:3}}>{count} kontak</div>
+              </div>
+            );})}
+          </div>
+          <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:17,margin:"0 0 13px"}}>Kontak Terbaru</h3>
+          {[...contacts].slice(0,5).map(c=>{const cat=categories.find(x=>x.id===c.category_id);return(
+            <div key={c.id} style={{...G.card,display:"flex",alignItems:"center",gap:12}} onClick={()=>setDetailContact(c)}>
+              <Avatar name={c.name} size={36} color={cat?.color} />
+              <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600}}>{c.name}</div><div style={{fontSize:12,color:T.textSub}}>{c.company||c.phone||"—"}</div></div>
+              {cat&&<span style={G.tag(cat.color)}>{cat.icon} {cat.name}</span>}
+              <Badge status={c.status} />
+            </div>
+          );})}
+        </div>
+      )}
+
+      {/* CONTACTS */}
+      {showContacts&&(
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
+            <div>
+              <h1 style={{...G.h1,color:currentCat?currentCat.color:catFilter==="__none__"?T.textSub:T.text}}>
+                {currentCat?`${currentCat.icon} ${currentCat.name}`:catFilter==="__none__"?"❔ Tanpa Kategori":"Semua Kontak"}
+              </h1>
+              <p style={{color:T.textSub,fontSize:13,margin:"4px 0 0"}}>{visibleContacts.length} kontak</p>
+            </div>
+            <button style={G.btn("primary")} onClick={()=>{setEditTarget(null);setModal("add-contact");}}>+ Tambah</button>
+          </div>
+          <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+            <input style={{...G.input,maxWidth:240}} placeholder="🔍 Cari nama, HP, email..." value={search} onChange={e=>setSearch(e.target.value)} />
+            <select style={{...G.select,width:"auto"}} value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>{["All","Active","Lead","Inactive","VIP"].map(s=><option key={s}>{s}</option>)}</select>
+            <select style={{...G.select,width:"auto"}} value={sortBy} onChange={e=>setSortBy(e.target.value)}>
+              <option value="newest">Terbaru</option><option value="oldest">Terlama</option><option value="name_asc">Nama A–Z</option><option value="name_desc">Nama Z–A</option>
+            </select>
+            {!catFilter&&<select style={{...G.select,width:"auto"}} value={catFilter||""} onChange={e=>setCatFilter(e.target.value||null)}>
+              <option value="">Semua Kategori</option><option value="__none__">Tanpa Kategori</option>
+              {categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+            </select>}
+          </div>
+          {selectedIds.length>0&&(
+            <div style={{background:T.surface2,border:`1px solid ${T.borderLight}`,borderRadius:10,padding:"10px 15px",marginBottom:12,display:"flex",alignItems:"center",gap:11,flexWrap:"wrap"}}>
+              <span style={{fontSize:13,fontWeight:600,color:T.gold}}>{selectedIds.length} dipilih</span>
+              <select style={{...G.select,width:"auto"}} value={bulkCatId} onChange={e=>setBulkCatId(e.target.value)}>
+                <option value="">Pindah ke kategori...</option>
+                {categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+              </select>
+              <button style={G.btn("ghost",true)} onClick={bulkMoveCat}>Pindah</button>
+              <button style={G.btn("danger",true)} onClick={()=>setConfirmBulkDelete(true)}>🗑 Hapus</button>
+              <button style={G.btn("ghost",true)} onClick={()=>setSelectedIds([])}>Batal</button>
+            </div>
+          )}
+          {!visibleContacts.length&&<div style={{textAlign:"center",padding:"60px 0",color:T.textMuted}}><div style={{fontSize:36,marginBottom:10}}>◌</div>Tidak ada kontak.</div>}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:8}}>
+            {visibleContacts.map(c=>{
+              const cat=categories.find(x=>x.id===c.category_id);
+              const fuS=followUpStatus(c.follow_up_date);
+              const sel=selectedIds.includes(c.id);
+              return(
+                <div key={c.id} style={{...G.card,borderColor:sel?T.gold:fuS==="overdue"?T.red+"55":T.border,background:sel?T.goldDim:T.surface}} onClick={()=>setDetailContact(c)}>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div onClick={e=>{e.stopPropagation();setSelectedIds(p=>sel?p.filter(x=>x!==c.id):[...p,c.id]);}}>
+                      <div style={{width:17,height:17,borderRadius:4,border:`2px solid ${sel?T.gold:T.borderLight}`,background:sel?T.gold:"transparent",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer"}}>
+                        {sel&&<span style={{fontSize:10,color:"#080808",fontWeight:900}}>✓</span>}
+                      </div>
+                    </div>
+                    <Avatar name={c.name} size={38} color={cat?.color||T.gold} />
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:14,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.name}</div>
+                      <div style={{fontSize:12,color:T.textSub,marginTop:1}}>{c.company||c.phone||"—"}</div>
+                    </div>
+                    <Badge status={c.status} />
+                  </div>
+                  <div style={{display:"flex",gap:5,marginTop:9,flexWrap:"wrap"}}>
+                    {cat&&<span style={G.tag(cat.color)}>{cat.icon} {cat.name}</span>}
+                    {fuS==="overdue"&&<span style={G.tag(T.red)}>⚠️ Overdue</span>}
+                    {fuS==="today"&&<span style={G.tag(T.gold)}>🔔 Hari ini</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {page==="followup"&&!catFilter&&<FollowUpPage contacts={contacts} categories={categories} onView={setDetailContact} />}
+      {page==="analytics"&&!catFilter&&<AnalyticsPage contacts={contacts} categories={categories} interactions={interactions} />}
+      {page==="duplicates"&&!catFilter&&<DuplicatesPage contacts={contacts} categories={categories} onDelete={deleteContact} onView={setDetailContact} />}
+      {page==="manage-cats"&&!catFilter&&<ManageCatsPage categories={categories} contacts={contacts} onAdd={()=>{setEditTarget(null);setModal("add-cat");}} onEdit={c=>{setEditTarget(c);setModal("edit-cat");}} onDelete={deleteCat} onRename={renameCat} onNavigate={id=>{setCatFilter(id);setPage("contacts");}} />}
+
+      </>}
+    </div>
+  </div>
+
+  {/* Modals */}
+  {(modal==="add-contact"||modal==="edit-contact")&&<ContactModal contact={editTarget} categories={categories} onSave={saveContact} onClose={()=>{setModal(null);setEditTarget(null);}} />}
+  {(modal==="add-cat"||modal==="edit-cat")&&<CatModal cat={editTarget} onSave={saveCat} onClose={()=>{setModal(null);setEditTarget(null);}} />}
+  {modal==="import"&&<ImportModal categories={categories} onImport={importContacts} onClose={()=>setModal(null)} />}
+  {detailContact&&<ContactDetail contact={detailContact} categories={categories} interactions={interactions} onEdit={c=>{setDetailContact(null);setEditTarget(c);setModal("edit-contact");}} onDelete={deleteContact} onShowInteractions={()=>{setInteractionContact(detailContact);setDetailContact(null);}} onClose={()=>setDetailContact(null)} />}
+  {interactionContact&&<InteractionModal contactId={interactionContact.id} interactions={interactions} onSave={saveInteraction} onDelete={deleteInteraction} onClose={()=>setInteractionContact(null)} />}
+  {confirmBulkDelete&&<Confirm title={`Hapus ${selectedIds.length} kontak?`} desc="Tindakan ini tidak bisa dibatalkan." onConfirm={bulkDelete} onCancel={()=>setConfirmBulkDelete(false)} />}
+  <Toast toasts={toasts} />
+</div>
+```
+
+);
+}
